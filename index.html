@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fable - Clean Version</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, doc, setDoc, getDoc, deleteDoc, updateDoc, arrayUnion, arrayRemove, where } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBicLFQivj-gnXk_IOdbdYZDfh7hHiA_-g",
+            authDomain: "my-browser-bd.firebaseapp.com",
+            projectId: "my-browser-bd",
+            storageBucket: "my-browser-bd.firebasestorage.app",
+            messagingSenderId: "5945938900",
+            appId: "1:5945938900:web:284a2efa955a484df5fc41"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        let currentUser = null;
+        let activePostId = null;
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUser = user;
+                showApp();
+            } else {
+                showAuth();
+            }
+        });
+
+        // Helper to check badges
+        function getNameHTML(name, followersCount, isMonetized) {
+            let badges = '';
+            if (followersCount >= 100) {
+                badges += ` <i class="fa-solid fa-circle-check" style="color: #1877f2; font-size: 14px;"></i>`;
+            }
+            if (isMonetized) {
+                badges += ` <span style="font-size: 10px; color: #27ae60; font-weight: bold;">(Monetization)</span>`;
+            }
+            return `<span>${name}</span>${badges}`;
+        }
+
+        window.toggleAuthMode = () => {
+            document.getElementById('login-box').classList.toggle('hidden');
+            document.getElementById('signup-box').classList.toggle('hidden');
+        };
+
+        window.handleSignUp = async () => {
+            const name = document.getElementById('reg-name').value;
+            const e = document.getElementById('reg-email').value;
+            const p = document.getElementById('reg-pass').value;
+            if(!name || !e || p.length < 6) return alert("  ");
+
+            try {
+                const res = await createUserWithEmailAndPassword(auth, e, p);
+                await setDoc(doc(db, "users", res.user.uid), {
+                    uid: res.user.uid, 
+                    name, 
+                    email: e, 
+                    emoji: "",
+                    followers: [], 
+                    following: [], 
+                    isMonetized: false,
+                    monetizationStatus: 'none',
+                    createdAt: Date.now()
+                });
+            } catch (err) { alert(err.message); }
+        };
+
+        window.handleLogin = async () => {
+            const e = document.getElementById('auth-email').value;
+            const p = document.getElementById('auth-pass').value;
+            try { await signInWithEmailAndPassword(auth, e, p); } catch (err) { alert("   !"); }
+        };
+
+        window.handleLogout = () => signOut(auth);
+
+        window.changeView = (viewName, targetId = null) => {
+            if(targetId === currentUser?.uid) viewName = 'profile';
+            document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+            document.getElementById(viewName + '-view').classList.remove('hidden');
+            if(viewName === 'home') renderHome();
+            if(viewName === 'accounts') renderAccounts();
+            if(viewName === 'profile') renderMyProfile();
+            if(viewName === 'user-profile') renderUserProfile(targetId);
+        };
+
+        function formatTime(timestamp) {
+            if(!timestamp) return "";
+            return new Date(timestamp).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+
+        async function createPostHTML(post, postId, showMenu = false) {
+            const liked = post.likes?.includes(currentUser.uid);
+            const userSnap = await getDoc(doc(db, "users", post.uid));
+            const userData = userSnap.data();
+            const followers = userData?.followers?.length || 0;
+            const isMonetized = userData?.isMonetized || false;
+
+            return `
+                <div class="glass-card">
+                    <div class="post-header">
+                        <div class="user-meta" onclick="changeView('user-profile', '${post.uid}')">
+                            <div class="emoji-avatar">${post.emoji || ''}</div>
+                            <div>
+                                <strong>${getNameHTML(post.name, followers, isMonetized)}</strong>
+                                <div style="font-size: 11px; color: #888;">${formatTime(post.createdAt)}</div>
+                            </div>
+                        </div>
+                        ${showMenu ? `<button class="three-dot" onclick="toggleMenu('${postId}')"><i class="fa fa-ellipsis-v"></i></button>` : ''}
+                    </div>
+                    <div class="post-body" style="margin-top:10px;"><p>${post.text}</p></div>
+                    <div class="btn-group">
+                        <button class="action-btn ${liked ? 'liked' : ''}" onclick="toggleLike('${postId}', ${liked})"><i class="fa-heart ${liked ? 'fa-solid' : 'fa-regular'}"></i> ${post.likes?.length || 0}</button>
+                        <button class="action-btn" onclick="openComments('${postId}')"><i class="fa-regular fa-comment"></i> ${post.commentCount || 0}</button>
+                    </div>
+                </div>`;
+        }
+
+        window.renderHome = () => {
+            onSnapshot(query(collection(db, "posts"), orderBy("createdAt", "desc")), async (snap) => {
+                const feed = document.getElementById('news-feed'); 
+                feed.innerHTML = '';
+                for (const d of snap.docs) {
+                    feed.innerHTML += await createPostHTML(d.data(), d.id, false);
+                }
+            });
+        };
+
+        window.renderMyProfile = () => {
+            onSnapshot(doc(db, "users", currentUser.uid), (snap) => {
+                const d = snap.data();
+                const followersCount = d.followers?.length || 0;
+                document.getElementById('my-name').innerHTML = getNameHTML(d.name, followersCount, d.isMonetized);
+                document.getElementById('my-emoji').innerText = d.emoji;
+                document.getElementById('my-followers').innerText = followersCount;
+                document.getElementById('my-following').innerText = d.following?.length || 0;
+
+                // Monetization Logic
+                const monBtn = document.getElementById('mon-apply-btn');
+                if (followersCount >= 100 && d.monetizationStatus === 'none') {
+                    monBtn.classList.remove('hidden');
+                } else {
+                    monBtn.classList.add('hidden');
+                }
+            });
+            onSnapshot(query(collection(db, "posts"), where("uid", "==", currentUser.uid), orderBy("createdAt", "desc")), async (snap) => {
+                const cont = document.getElementById('my-posts'); cont.innerHTML = '';
+                document.getElementById('my-post-count').innerText = snap.size;
+                for (const d of snap.docs) { cont.innerHTML += await createPostHTML(d.data(), d.id, true); }
+            });
+        };
+
+        window.applyMonetization = async () => {
+            const phone = prompt("      :");
+            if (phone && phone.length >= 11) {
+                await updateDoc(doc(db, "users", currentUser.uid), {
+                    monetizationStatus: 'applied',
+                    phone: phone,
+                    isMonetized: true // Automatically turning on for this demo as requested
+                });
+                alert("      !");
+            } else {
+                alert("   ");
+            }
+        };
+
+        window.renderUserProfile = (uid) => {
+            onSnapshot(doc(db, "users", uid), (snap) => {
+                const d = snap.data();
+                const isF = d.followers?.includes(currentUser.uid);
+                document.getElementById('u-name').innerHTML = getNameHTML(d.name, d.followers?.length, d.isMonetized);
+                document.getElementById('u-emoji').innerText = d.emoji;
+                document.getElementById('u-followers').innerText = d.followers?.length || 0;
+                document.getElementById('u-following').innerText = d.following?.length || 0;
+                const btn = document.getElementById('u-follow-btn');
+                btn.innerText = isF ? "Unfollow" : "Follow";
+                btn.onclick = () => toggleFollow(uid, isF);
+            });
+        };
+
+        window.renderAccounts = () => {
+            onSnapshot(collection(db, "users"), (snap) => {
+                const list = document.getElementById('all-users'); list.innerHTML = '';
+                snap.forEach(d => {
+                    const u = d.data(); if(u.uid === currentUser.uid) return;
+                    const isF = u.followers?.includes(currentUser.uid);
+                    list.innerHTML += `<div class="user-card"><div class="user-meta" onclick="changeView('user-profile', '${u.uid}')"><div class="emoji-avatar">${u.emoji}</div><strong>${getNameHTML(u.name, u.followers?.length, u.isMonetized)}</strong></div><button class="follow-btn ${isF ? 'unf' : ''}" onclick="toggleFollow('${u.uid}', ${isF})">${isF ? 'Unfollow' : 'Follow'}</button></div>`;
+                });
+            });
+        };
+
+        window.handleUpload = async () => {
+            const text = document.getElementById('upload-text').value; if(!text.trim()) return;
+            const uData = (await getDoc(doc(db, "users", currentUser.uid))).data();
+            await addDoc(collection(db, "posts"), { uid: currentUser.uid, name: uData.name, emoji: uData.emoji, text: text, createdAt: Date.now(), likes: [], commentCount: 0 });
+            document.getElementById('upload-text').value = ''; changeView('home');
+        };
+
+        window.toggleFollow = async (t, f) => {
+            await updateDoc(doc(db, "users", currentUser.uid), { following: f ? arrayRemove(t) : arrayUnion(t) });
+            await updateDoc(doc(db, "users", t), { followers: f ? arrayRemove(currentUser.uid) : arrayUnion(currentUser.uid) });
+        };
+        window.toggleLike = async (id, isL) => { await updateDoc(doc(db, "posts", id), { likes: isL ? arrayRemove(currentUser.uid) : arrayUnion(currentUser.uid) }); };
+        function showAuth() { document.getElementById('auth-screen').classList.remove('hidden'); document.getElementById('main-app').classList.add('hidden'); }
+        function showApp() { document.getElementById('auth-screen').classList.add('hidden'); document.getElementById('main-app').classList.remove('hidden'); changeView('home'); }
+        window.navAction = (el, view) => { document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active')); el.classList.add('active'); changeView(view); };
+    </script>
+
+    <style>
+        :root { --primary: #1877f2; --bg: #f0f2f5; }
+        body { background: var(--bg); font-family: sans-serif; margin: 0; padding-bottom: 70px; }
+        header { background: var(--primary); color: white; padding: 15px; text-align: center; font-size: 20px; font-weight: bold; position: sticky; top: 0; z-index: 100; }
+        .glass-card { background: white; border-radius: 12px; padding: 15px; margin: 10px auto; max-width: 500px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); position: relative; }
+        .hidden { display: none !important; }
+        .emoji-avatar { width: 45px; height: 45px; background: #eee; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 22px; margin-right: 10px; }
+        .user-meta { display: flex; align-items: center; cursor: pointer; }
+        .post-header { display: flex; justify-content: space-between; align-items: center; }
+        .btn-group { display: flex; justify-content: space-around; border-top: 1px solid #eee; margin-top: 10px; padding-top: 5px; }
+        .action-btn { background: none; border: none; cursor: pointer; color: #65676b; font-weight: bold; }
+        .liked { color: #e74c3c; }
+        nav { position: fixed; bottom: 0; width: 100%; background: white; display: flex; padding: 10px 0; border-top: 1px solid #ddd; z-index: 1000; }
+        .nav-link { flex: 1; text-align: center; color: #65676b; cursor: pointer; font-size: 20px; }
+        .nav-link.active { color: var(--primary); }
+        .btn-blue { background: var(--primary); color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 5px; }
+        input, textarea { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 8px; box-sizing: border-box; }
+        .stats { display: flex; justify-content: space-around; margin: 15px 0; border-top: 1px solid #eee; padding-top: 10px; }
+        .user-card { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: white; margin: 5px; border-radius: 8px; }
+        .follow-btn { background: var(--primary); color: white; border: none; padding: 6px 15px; border-radius: 15px; cursor: pointer; }
+        .mon-btn { background: #27ae60; color: white; border: none; padding: 8px; border-radius: 5px; cursor: pointer; font-size: 12px; float: right; margin-top: -40px; }
+    </style>
+</head>
+<body>
+
+<div id="auth-screen" class="hidden">
+    <header>Fable</header>
+    <div id="login-box" class="glass-card" style="text-align:center; margin-top: 50px;">
+        <h3> </h3>
+        <input type="email" id="auth-email" placeholder="">
+        <input type="password" id="auth-pass" placeholder="">
+        <button class="btn-blue" onclick="handleLogin()"></button>
+        <hr>
+        <button class="btn-blue" style="background:#42b72a" onclick="toggleAuthMode()">  </button>
+    </div>
+    <div id="signup-box" class="glass-card hidden" style="text-align:center; margin-top: 50px;">
+        <h3> </h3>
+        <input type="text" id="reg-name" placeholder=" ">
+        <input type="email" id="reg-email" placeholder="">
+        <input type="password" id="reg-pass" placeholder="">
+        <button class="btn-blue" style="background:#42b72a" onclick="handleSignUp()">  </button>
+    </div>
+</div>
+
+<div id="main-app" class="hidden">
+    <header>Fable</header>
+
+    <div id="home-view" class="view"><div id="news-feed"></div></div>
+    <div id="accounts-view" class="view hidden"><div style="padding:10px;"><h3> </h3><div id="all-users"></div></div></div>
+    <div id="upload-view" class="view hidden">
+        <div class="glass-card"><h3> </h3><textarea id="upload-text" rows="4" placeholder=" ?"></textarea><button class="btn-blue" onclick="handleUpload()"> </button></div>
+    </div>
+
+    <div id="profile-view" class="view hidden">
+        <div class="glass-card" style="text-align:center">
+            <button id="mon-apply-btn" class="mon-btn hidden" onclick="applyMonetization()">Monetization Apply</button>
+            <div id="my-emoji" style="font-size:50px"></div>
+            <h2 id="my-name">...</h2>
+            <div class="stats">
+                <div><b id="my-post-count">0</b><br>Post</div>
+                <div><b id="my-followers">0</b><br>Followers</div>
+                <div><b id="my-following">0</b><br>Following</div>
+            </div>
+            <button class="btn-blue" onclick="handleLogout()" style="background:#e74c3c">Logout</button>
+        </div>
+        <div id="my-posts"></div>
+    </div>
+
+    <div id="user-profile-view" class="view hidden">
+        <div class="glass-card" style="text-align:center">
+            <div id="u-emoji" style="font-size:50px"></div><h2 id="u-name">...</h2>
+            <div class="stats">
+                <div><b id="u-post-count">0</b><br>Post</div>
+                <div><b id="u-followers">0</b><br>Followers</div>
+                <div><b id="u-following">0</b><br>Following</div>
+            </div>
+            <button id="u-follow-btn" class="follow-btn" style="width:100%"></button>
+        </div>
+        <div id="u-posts"></div>
+    </div>
+
+    <nav>
+        <div class="nav-link active" onclick="navAction(this, 'home')"><i class="fa fa-home"></i></div>
+        <div class="nav-link" onclick="navAction(this, 'accounts')"><i class="fa fa-users"></i></div>
+        <div class="nav-link" onclick="navAction(this, 'upload')"><i class="fa fa-plus-circle"></i></div>
+        <div class="nav-link" id="nav-profile-icon" onclick="navAction(this, 'profile')"><i class="fa fa-user"></i></div>
+    </nav>
+</div>
+</body>
+</html>
